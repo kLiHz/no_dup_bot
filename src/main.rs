@@ -1,10 +1,14 @@
+use teloxide::dptree::di::DependencySupplier;
 use teloxide::payloads::SendMessageSetters;
+use teloxide::types::{MessageId};
 use teloxide::{prelude::*, net::Download, types::File as TgFile, types::PhotoSize};
 use teloxide::{RequestError, ApiError};
-use teloxide::utils::command::BotCommand;
+use teloxide::utils::command::BotCommands;
 
 use std::sync::Arc;
 use tokio::sync::{Mutex, MutexGuard};
+
+use futures::stream::{TryStreamExt};
 
 use url::Url;
 use serde::{Deserialize, Serialize};
@@ -24,12 +28,12 @@ use tracing::{debug, debug_span, info, span, warn, trace, Level, Instrument};
 use tracing_subscriber;
 
 static BOT_NAME: &str = "no_dup_bot";
-static ADMIN: OnceCell<HashSet<i64>> = OnceCell::new();
+static ADMIN: OnceCell<HashSet<UserId>> = OnceCell::new();
 static TIME_OUT_DAYS: i64 = 10;
 
 
-#[derive(BotCommand, Debug)]
-#[command(rename = "lowercase", description = "These commands are supported:")]
+#[derive(BotCommands, Debug)]
+#[command(rename_rule = "lowercase", description = "These commands are supported:")]
 enum Command {
     #[command(description = "Get help")]
     Help,
@@ -51,10 +55,10 @@ enum Command {
 // Due to limitation of Telegram API, we can only go one hop for replied
 // message, but no more. Therefore, we can not achieve this
 #[allow(dead_code)]
-fn come_from_original_author(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> bool {
-    if let Some(this_message_from) = cx.update.from() {
+fn come_from_original_author(update: &Message) -> bool {
+    if let Some(this_message_from) = update.from() {
         debug!("this_message_from is {:?}", this_message_from);
-        if let Some(message) = cx.update.reply_to_message() {
+        if let Some(message) = update.reply_to_message() {
             debug!("message is {:?}", message);
             if let Some(first_message) = message.reply_to_message() {
                 debug!("first_message is {:?}", first_message);
@@ -72,10 +76,10 @@ fn come_from_original_author(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> bool 
     true
 }
 
-fn is_admin(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> bool {
+fn is_admin(update: &Message) -> bool {
     let admin_db = ADMIN.get().unwrap().clone();
 
-    if let Some(user) = cx.update.from() {
+    if let Some(user) = update.from() {
         // dbg!(user);
         if admin_db.contains(&user.id) {
             info!("Admin {:?} confirmed", &user.id);
@@ -85,8 +89,8 @@ fn is_admin(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> bool {
     false
 }
 
-fn allows_delete(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> bool {
-    if is_admin(&cx) {
+fn allows_delete(update: &Message) -> bool {
+    if is_admin(update) {
         info!("Deleting message as directed by admin");
         return true
     }
@@ -98,8 +102,8 @@ fn allows_delete(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> bool {
 }
 
 // Delete the replied message
-fn reply_to_bot(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> bool {
-    if let Some(message) = cx.update.reply_to_message() {
+fn reply_to_bot(update: &Message) -> bool {
+    if let Some(message) = update.reply_to_message() {
         if let Some(usr) = message.from() {
             if let Some(username) = &usr.username {
                 if username.eq(BOT_NAME) {
@@ -112,17 +116,17 @@ fn reply_to_bot(cx: &UpdateWithCx<AutoSend<Bot>, Message>) -> bool {
 }
 
 // Delete the replied message
-async fn delete_replied_msg(cx: &UpdateWithCx<AutoSend<Bot>, Message>)
+async fn delete_replied_msg(bot: &Bot, update: &Message)
                             -> Result<(), RequestError> {
-    match cx.update.reply_to_message() {
+    match update.reply_to_message() {
         Some(message) => {
             if let Some(usr) = message.from() {
                 if let Some(username) = &usr.username {
                     if username.eq(BOT_NAME) {
                         info!("Start deleting message");
-                        if allows_delete(cx) {
-                            cx.requester
-                              .delete_message(cx.update.chat_id(), message.id)
+                        if allows_delete(update) {
+                            bot
+                              .delete_message(update.chat.id, message.id)
                               .await?;
                         }
                     }
@@ -133,7 +137,7 @@ async fn delete_replied_msg(cx: &UpdateWithCx<AutoSend<Bot>, Message>)
         }
         None => {
             // info!("Use this command in a reply to another message!");
-            cx.reply_to("Please reply to a message sent by the bot!").send().await?;
+            bot.send_message(update.chat.id, "Please reply to a message sent by the bot!").reply_to_message_id(update.id).await?;
         }
     }
     Ok(())
@@ -148,7 +152,7 @@ pub struct MessageInfo {
     count: u32,
     #[serde(with = "url_serde")]
     link: Option<Url>,
-    user_id: Option<i64>,
+    user_id: Option<UserId>,
 }
 
 #[derive(Debug, Clone, Hash, Serialize, Deserialize)]
@@ -173,7 +177,7 @@ pub struct ImageValue {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct UserKey {
     chat_id: String,
-    user_id: i64
+    user_id: UserId
 }
 
 #[derive(Debug, Clone, Hash, Serialize, Deserialize)]
@@ -253,35 +257,35 @@ impl MyDB {
     }
 }
 
-fn get_chat_id(ctx: &UpdateWithCx<AutoSend<Bot>, Message>) -> String {
-    let id = ctx.update.chat_id();
+fn get_chat_id(update: &Message) -> String {
+    let id = update.chat.id;
     let id_str = id.to_string();
     id_str.strip_prefix("-100")
           .map_or(id_str.clone(),
                   |id| String::from(id))
 }
 
-fn get_msg_link(ctx: &UpdateWithCx<AutoSend<Bot>, Message>) -> Option<Url> {
-    if ctx.update.chat.is_private() {
+fn get_msg_link(update: &Message) -> Option<Url> {
+    if update.chat.is_private() {
         return None;
     }
-    let id = ctx.update.id;
-    let url = match ctx.update.chat.username() {
+    let id = update.id;
+    let url = match update.chat.username() {
             // If it's public group (i.e. not DM, not private group), we can produce
             // "normal" t.me link (accesible to everyone).
             Some(username) => format!("https://t.me/{0}/{1}/", username, id),
             // For private groups we produce "private" t.me/c links. These are only
             // accesible to the group members.
-            None => format!("https://t.me/c/{0}/{1}/", get_chat_id(&ctx), id),
+            None => format!("https://t.me/c/{0}/{1}/", get_chat_id(update), id),
         };
     Some(Url::parse(&url).unwrap())
 }
 
-fn get_forward_msg_link(message: &UpdateWithCx<AutoSend<Bot>, Message>) -> Option<Url> {
-    let chat = message.update.forward_from_chat()?;
+fn get_forward_msg_link(update: &Message) -> Option<Url> {
+    let chat = update.forward_from_chat()?;
     debug!("chat.username() is {:?}", chat.username());
     if let (Some(username), Some(message_id))
-        = (chat.username(), message.update.forward_from_message_id())
+        = (chat.username(), update.forward_from_message_id())
     {
         let url = Url::parse(&format!("https://t.me/{}/{}", username, message_id)).ok();
         debug!("&url is {:?}", &url);
@@ -293,23 +297,23 @@ fn get_forward_msg_link(message: &UpdateWithCx<AutoSend<Bot>, Message>) -> Optio
     }
 }
 
-fn get_url(ctx: &UpdateWithCx<AutoSend<Bot>, Message>) -> Option<Url> {
-    let ss = ctx.update.text().to_owned()?;
+fn get_url(update: &Message) -> Option<Url> {
+    let ss = update.text().to_owned()?;
     Url::parse(ss).ok()
 }
 
-fn get_text(ctx: &UpdateWithCx<AutoSend<Bot>, Message>) -> Option<String> {
-    let ss = ctx.update.text().to_owned()?;
+fn get_text(update: &Message) -> Option<String> {
+    let ss = update.text().to_owned()?;
     Some(String::from(ss))
 }
 
-fn filter_url(ctx: &UpdateWithCx<AutoSend<Bot>, Message>, url: Option<Url>) -> Option<Url> {
+fn filter_url(update: &Message, url: Option<Url>) -> Option<Url> {
     let url = url?;
     // Remove params
     // url.set_query(None);
     let mut filtered_out = false;
 
-    let chat_id = get_chat_id(&ctx);
+    let chat_id = get_chat_id(update);
     if let Some(domain) = url.domain() {
         debug!("domain is {:?}", &domain);
         match domain {
@@ -350,18 +354,25 @@ fn filter_url(ctx: &UpdateWithCx<AutoSend<Bot>, Message>, url: Option<Url>) -> O
     }
 }
 
-async fn get_hash_new(ctx: &UpdateWithCx<AutoSend<Bot>, Message>, img_to_download: &PhotoSize) -> Result<Option<String>>{
-    let TgFile { file_path, .. } = ctx.requester.get_file(&img_to_download.file_id).send().await?;
-    let ss = ctx.requester.download_file_stream(&file_path);
-    let l = ss.collect::<Vec<_>>().await;
+async fn get_hash_new(bot: &Bot, img_to_download: &PhotoSize) -> Result<Option<String>>{
+    let TgFile { path, .. } = bot.get_file(&img_to_download.file.id).send().await?;
+    let mut stream = bot.download_file_stream(&path);
     // let mut count = 0;
-    let mut buf = vec![];
+    let mut buf = Vec::with_capacity(img_to_download.file.size as usize);
     let mut found_error = false;
-    for ii in l {
+    loop {
+        let ii = stream.try_next().await;
         match ii {
             Ok(b) => {
-                // count += 1;
-                buf.put(b);
+                match b {
+                    Some(b) => {
+                        // count += 1;
+                        buf.put(b);
+                    }
+                    None => {
+                        break;
+                    }
+                }
             }
             Err(e) => {
                 warn!("Error is {:?}", e);
@@ -581,13 +592,13 @@ fn touch_image(img_db: &MutexGuard<sled::Db>, chat_id: &str, hash_str: &ImageHas
 }
 
 
-async fn reset_top_board(ctx: &UpdateWithCx<AutoSend<Bot>, Message>,
+async fn reset_top_board(bot: &Bot, update: &Message,
                          top_db: &Arc<Mutex<sled::Db>>){
 
-    let chat_id = get_chat_id(&ctx);
+    let chat_id = get_chat_id(update);
 
     // prepare an empty key so we can limit search on images from the same chat
-    let empty_key = UserKey{chat_id: chat_id.clone(), user_id: 0};
+    let empty_key = UserKey{chat_id: chat_id.clone(), user_id: UserId(0)};
     let empty_key_str = serde_json::to_string(&empty_key).unwrap();
     // the number 20 is kind of arbitrary, but seems enough to capture the first
     // few bytes in the hash
@@ -637,12 +648,12 @@ async fn reset_top_board(ctx: &UpdateWithCx<AutoSend<Bot>, Message>,
     }
 
     let final_msg = String::from("本群火星排行榜已重置");
-    if let Ok(_answer_status) = ctx.reply_to(final_msg).await {
+    if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg).reply_to_message_id(update.id).await {
         // dbg!(answer_status);
     }
 }
 
-async fn update_top_board(top_db: &Arc<Mutex<sled::Db>>, chat_id: &str, user_id: &Option<i64>, username: &Option<String>){
+async fn update_top_board(top_db: &Arc<Mutex<sled::Db>>, chat_id: &str, user_id: &Option<UserId>, username: &Option<String>){
 
     if let Some(user_id) = user_id {
 
@@ -680,7 +691,7 @@ async fn update_top_board(top_db: &Arc<Mutex<sled::Db>>, chat_id: &str, user_id:
     }
 }
 
-async fn print_topics(ctx: &UpdateWithCx<AutoSend<Bot>, Message>,
+async fn print_topics(bot: &Bot, update: &Message,
                       db: Arc<Mutex<MyDB>>, chat_id: &str) {
     // prepare an empty key so we can limit search on images from the same chat
     let empty_key = MessageKey{
@@ -737,17 +748,16 @@ async fn print_topics(ctx: &UpdateWithCx<AutoSend<Bot>, Message>,
                                    &link).as_str());
         count += 1;
     }
-    let chat_id = ctx.chat_id().clone();
-    if let Ok(_answer_status) = ctx.requester.inner().send_message(chat_id, final_msg)
-                                                     // .disable_web_page_preview(true)
-                                                     .send().await {
+    if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg)
+                                   // .disable_web_page_preview(true)
+                                   .send().await {
     }
 }
 
-async fn print_top_board(ctx: &UpdateWithCx<AutoSend<Bot>, Message>,
+async fn print_top_board(bot: &Bot, update: &Message,
                          top_db: &Arc<Mutex<sled::Db>>, chat_id: &str) {
     // prepare an empty key so we can limit search on images from the same chat
-    let empty_key = UserKey{chat_id: String::from(chat_id), user_id: 0};
+    let empty_key = UserKey{chat_id: String::from(chat_id), user_id: UserId(0)};
     let empty_key_str = serde_json::to_string(&empty_key).unwrap();
     // the number 20 is kind of arbitrary, but seems enough to capture the first
     // few bytes in the hash
@@ -799,10 +809,9 @@ async fn print_top_board(ctx: &UpdateWithCx<AutoSend<Bot>, Message>,
     } else {
         final_msg.push_str("本群还没有人火星过！\n");
     }
-    let chat_id = ctx.chat_id().clone();
-    if let Ok(_answer_status) = ctx.requester.inner().send_message(chat_id, final_msg)
-                                                     .disable_web_page_preview(true)
-                                                     .send().await {
+    if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg)
+                                   .disable_web_page_preview(true)
+                                   .send().await {
 
         // dbg!(answer_status);
     }
@@ -811,10 +820,10 @@ async fn print_top_board(ctx: &UpdateWithCx<AutoSend<Bot>, Message>,
     // }
 }
 
-async fn print_my_number(ctx: &UpdateWithCx<AutoSend<Bot>, Message>,
+async fn print_my_number(bot: &Bot, update: &Message,
                          top_db: &Arc<Mutex<sled::Db>>) {
-    let chat_id = get_chat_id(&ctx);
-    let user_id = ctx.update.from().map_or(None, |u| Some(u.id));
+    let chat_id = get_chat_id(update);
+    let user_id = update.from().map_or(None, |u| Some(u.id));
 
     let mut final_msg = String::from("");
 
@@ -849,7 +858,7 @@ async fn print_my_number(ctx: &UpdateWithCx<AutoSend<Bot>, Message>,
         final_msg.push_str(format!("找不到您的user_id\n").as_str())
     }
 
-    if let Ok(_answer_status) = ctx.reply_to(final_msg).await {
+    if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg).reply_to_message_id(update.id).await {
         // dbg!(answer_status);
     }
 
@@ -900,27 +909,27 @@ async fn cleanup_img_db(img_db: &Arc<Mutex<sled::Db>>, chat_id: &str) -> Result<
 
 async fn
 parse_message(
-    ctx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    bot: &Bot, update: &Message,
     db: Arc<Mutex<MyDB>>,
     img_db: Arc<Mutex<sled::Db>>,
     top_db: Arc<Mutex<sled::Db>>
 ) -> Result<()> {
     let mut url: Option<Url>;
-    let link = get_msg_link(&ctx);
-    let clean_chat_id = get_chat_id(&ctx);
-    let user_id = ctx.update.from().map_or(None, |u| Some(u.id));
-    let username = ctx.update.from().map_or(None,
-                                            |u|
-                                            match u.last_name.clone() {
-                                                Some(last_name) => Some(format!("{} {}", u.first_name.clone(), last_name)),
-                                                None => Some(u.first_name.clone())
-                                            });
-    let msg_id = ctx.update.id;
+    let link = get_msg_link(update);
+    let clean_chat_id = get_chat_id(update);
+    let user_id = update.from().map_or(None, |u| Some(u.id));
+    let username = update.from().map_or(None,
+                                        |u|
+                                        match u.last_name.clone() {
+                                            Some(last_name) => Some(format!("{} {}", u.first_name.clone(), last_name)),
+                                            None => Some(u.first_name.clone())
+                                        });
+    let msg_id = update.id;
 
-    match (is_forward(&ctx), is_image(&ctx)) {
+    match (is_forward(update), is_image(update)) {
         (true, false) => {
             // is a forward message
-            url = get_forward_msg_link(&ctx);
+            url = get_forward_msg_link(update);
             if url.is_some(){
                 trace!("Found a forwarded channel message");
             } else {
@@ -939,7 +948,7 @@ parse_message(
             // is an image, but not forward
             trace!("Found an image message that is not a channel forward");
             url = None;
-            let img_vec = ctx.update.photo()
+            let img_vec = update.photo()
                                     .ok_or(Error::new(ErrorKind::Other, "failed to download img_vec"))?;
             let mut img_to_download: Option<PhotoSize> = None;
             for img in img_vec.iter() {
@@ -956,7 +965,7 @@ parse_message(
                 }
             }
             if let Some(img) = img_to_download {
-                match get_hash_new(&ctx, &img).await {
+                match get_hash_new(bot, &img).await {
                     Ok(Some(hash)) => {
                         trace!("Get hash {}", &hash);
                         match check_img_hash(&img_db, &hash, &clean_chat_id).await {
@@ -992,14 +1001,14 @@ parse_message(
         (false, false) => {
             // not forward nor image, only interested in pure url
             // info!("Found a non-forward, non-image message");
-            url = get_url(&ctx);
+            url = get_url(update);
             if url.is_none(){
                 debug!("Non-forwarded message link parse failure.")
             }
-            url = filter_url(&ctx, url);
+            url = filter_url(update, url);
         }
     }
-    let mut my_msg_id: Option<i32> = None;
+    let mut my_msg_id: Option<MessageId> = None;
     if let Some(url) = url {
         let key = MessageKey{chat_id: clean_chat_id.clone(), url:url.clone()};
         let db = db.lock().await;
@@ -1017,7 +1026,7 @@ parse_message(
             // ctx.answer(&link_msg).await?;
             let final_msg = format!("你火星了！这条消息是第{}次来到本群了，快去爬楼。{}", info.count, link_msg);
             info!("{}", &final_msg);
-            if let Ok(msg) = ctx.reply_to(final_msg).await {
+            if let Ok(msg) = bot.send_message(update.chat.id, final_msg).reply_to_message_id(update.id).await {
                 my_msg_id = Some(msg.id);
             }
         } else {
@@ -1026,26 +1035,26 @@ parse_message(
             db.save(&key, &value);
         };
     } else {
-        get_text(&ctx).map(|text| debug!("Msg: {}", text));
+        get_text(update).map(|text| debug!("Msg: {}", text));
     }
     // delete my message if the message we replied to gets deleted
     if let Some(my_msg_id) = my_msg_id {
-        let raw_chat_id = ctx.update.chat_id();
-        delete_final_msg_accordingly(&ctx, raw_chat_id, msg_id, my_msg_id).await;
+        let raw_chat_id = update.chat.id;
+        delete_final_msg_accordingly(bot, raw_chat_id, msg_id, my_msg_id).await;
     }
     Ok(())
 }
 
-async fn delete_final_msg_accordingly(ctx: &UpdateWithCx<AutoSend<Bot>, Message>, chat_id: i64, msg_id: i32, my_msg_id: i32) -> bool{
+async fn delete_final_msg_accordingly(bot: &Bot, chat_id: ChatId, msg_id: MessageId, my_msg_id: MessageId) -> bool{
     let check_wait_duration = tokio::time::Duration::from_secs(30);
     tokio::time::sleep(check_wait_duration).await;
 
-    match ctx.requester.forward_message(chat_id, chat_id, msg_id).await {
+    match bot.forward_message(chat_id, chat_id, msg_id).await {
         Ok(msg) => {
             // // message was not deleted
             // info!("Get msg {:?}", &msg);
             // info!("Message was not deleted, delete the new forward");
-            if let Err(e) = ctx.requester.delete_message(chat_id, msg.id).await {
+            if let Err(e) = bot.delete_message(chat_id, msg.id).await {
                 warn!("Delete failed with error {:?}", e);
             };
         },
@@ -1053,7 +1062,7 @@ async fn delete_final_msg_accordingly(ctx: &UpdateWithCx<AutoSend<Bot>, Message>
             // unknown error
             info!("The attempt to forward the message failed");
              match e {
-                 RequestError::ApiError{kind, status_code:_}
+                 RequestError::Api(kind)
                  if kind == ApiError::MessageToForwardNotFound ||
                      kind == ApiError::MessageIdInvalid => {
                     info!("The message was deleted, so we also delete our notification");
@@ -1062,7 +1071,7 @@ async fn delete_final_msg_accordingly(ctx: &UpdateWithCx<AutoSend<Bot>, Message>
                     warn!("Some other error detected: {:?}", e);
                 }
             }
-            if let Err(e) =  ctx.requester.delete_message(chat_id, my_msg_id).await {
+            if let Err(e) =  bot.delete_message(chat_id, my_msg_id).await {
                 warn!("Clean up chat {} message {} failed with error {:?}", chat_id, my_msg_id, e);
             };
         }
@@ -1071,12 +1080,12 @@ async fn delete_final_msg_accordingly(ctx: &UpdateWithCx<AutoSend<Bot>, Message>
 }
 
 
-fn is_forward(ctx: &UpdateWithCx<AutoSend<Bot>, Message>) -> bool {
-    ctx.update.forward_from().is_some() || ctx.update.forward_from_chat().is_some()
+fn is_forward(update: &Message) -> bool {
+    update.forward_from().is_some() || update.forward_from_chat().is_some()
 }
 
-fn is_image(ctx: &UpdateWithCx<AutoSend<Bot>, Message>) -> bool {
-    ctx.update.photo().is_some()
+fn is_image(update: &Message) -> bool {
+    update.photo().is_some()
     // match ctx.update.photo() {
     //     Some(img) => {
     //         // dbg!(img);
@@ -1086,7 +1095,7 @@ fn is_image(ctx: &UpdateWithCx<AutoSend<Bot>, Message>) -> bool {
     // }
 }
 
-fn need_handle(ctx: &UpdateWithCx<AutoSend<Bot>, Message>) -> bool {
+fn need_handle(update: &Message) -> bool {
     // dbg!(ctx.update.chat.is_private());
     // dbg!(ctx.update.chat_id());
     // dbg!(ctx.update.id);
@@ -1097,22 +1106,22 @@ fn need_handle(ctx: &UpdateWithCx<AutoSend<Bot>, Message>) -> bool {
     // dbg!(ctx.update.forward_signature());
     // dbg!(ctx.update.reply_to_message());
 
-    is_forward(&ctx)
-        || ctx.update.text().to_owned()
+    is_forward(update)
+        || update.text().to_owned()
                             .map_or(false,
                                     |ss| Url::parse(ss).is_ok())
-        || is_image(&ctx)
+        || is_image(update)
 }
 
-async fn handle_command(ctx: &UpdateWithCx<AutoSend<Bot>, Message>,
+async fn handle_command(bot: &Bot, update: &Message,
                         db: Arc<Mutex<MyDB>>,
                         top_db: Arc<Mutex<sled::Db>>) -> Result<bool, RequestError> {
     let bot_name_str = BOT_NAME;
-    if let Some(text) = ctx.update.text() {
+    if let Some(text) = update.text() {
         if let Ok(command) = Command::parse(text, bot_name_str) {
             // dbg!(&command);
-            if text.contains(bot_name_str) || reply_to_bot(&ctx){
-                action(&ctx, command, db, top_db).await?;
+            if text.contains(bot_name_str) || reply_to_bot(update){
+                action(bot, update, command, db, top_db).await?;
                 return Ok(true)
             } else {
                 return Ok(false)
@@ -1123,7 +1132,7 @@ async fn handle_command(ctx: &UpdateWithCx<AutoSend<Bot>, Message>,
 }
 
 async fn action(
-    ctx: &UpdateWithCx<AutoSend<Bot>, Message>,
+    bot: &Bot, update: &Message,
     command: Command,
     db: Arc<Mutex<MyDB>>,
     top_db: Arc<Mutex<sled::Db>>
@@ -1131,31 +1140,31 @@ async fn action(
     match command {
         Command::Help => {
             info!("Handling help request");
-            ctx.answer(Command::descriptions()).send().await.map(|_| ())?
+            bot.send_message(update.chat.id, Command::descriptions().to_string()).await.map(|_| ())?
         },
         Command::Delete => {
             info!("Handling delete request");
-            delete_replied_msg(&ctx).await?
+            delete_replied_msg(bot, update).await?
         },
         Command::Top => {
             info!("Handling top board request");
-            let chat_id = get_chat_id(&ctx);
-            print_top_board(&ctx, &top_db, &chat_id).await;
+            let chat_id = get_chat_id(update);
+            print_top_board(bot, update, &top_db, &chat_id).await;
         },
         Command::Topics => {
             info!("Show topics");
-            let chat_id = get_chat_id(&ctx);
-            print_topics(&ctx, db, &chat_id).await;
+            let chat_id = get_chat_id(update);
+            print_topics(bot, update, db, &chat_id).await;
         },
         Command::Me => {
             info!("Handling me request");
-            print_my_number(&ctx, &top_db).await;
+            print_my_number(bot, update, &top_db).await;
         },
         Command::ResetTop => {
             info!("Handling ResetTop request");
-            if is_admin(&ctx) {
+            if is_admin(update) {
                 info!("Resetting top board for current chat");
-                reset_top_board(&ctx, &top_db).await;
+                reset_top_board(bot, update, &top_db).await;
             }
         }
     };
@@ -1168,33 +1177,33 @@ async fn run(db: Arc<Mutex<MyDB>>,
              top_db: Arc<Mutex<sled::Db>>) {
     info!("Starting simple_commands_bot...");
 
-    let bot = Bot::from_env().auto_send();
+    let bot = Bot::from_env();
 
     // bot.set_my_commands(vec![teloxide::types::BotCommand::new("help", "delete")]).send().await.unwrap();
 
-    let db = db.clone();
-    teloxide::repl(bot, move |ctx| {
-        let db = db.clone();
-        let img_db = img_db.clone();
-        let top_db = top_db.clone();
-        async move {
-            match handle_command(&ctx, db.clone(), top_db.clone()).await {
+    Dispatcher::builder(bot, Update::filter_message().endpoint(
+        |bot: Bot, map: DependencyMap, update: Message| async move {
+            let db: Arc<Mutex<MyDB>> = map.get();
+            let img_db: Arc<Mutex<sled::Db>> = map.get();
+            let top_db: Arc<Mutex<sled::Db>> = map.get();
+            match handle_command(&bot, &update, db.clone(), top_db.clone()).await {
                 Ok(true) => {
                     info!("Command handled successfully");
                 },
                 Ok(false) | Err(_) => {
-                    if need_handle(&ctx) {
+                    if need_handle(&update) {
                         // TODO: think of a better way to do it.
                         // Currently decided to suppress this error.
                         // teloxide seem to want a RequestError, while we would want a general Error
-                        let chat_id = ctx.update.id;
-                        let group_title = ctx.update.chat.title();
+                        let MessageId(chat_id) = update.id;
+                        let group_title = update.chat.title();
 
                         let username: Option<&str>;
-                        let user = match ctx.update.from() {
+                        let user = match update.from() {
                             Some(user) => {
                                 username = Some(&user.first_name);
-                                Some(user.id)
+                                let UserId(user_id) = user.id;
+                                Some(user_id)
                             },
                             _ => {
                                 username = None;
@@ -1206,7 +1215,7 @@ async fn run(db: Arc<Mutex<MyDB>>,
                                                name = &group_title,
                                                by = &user,
                                                username = &username);
-                        parse_message(&ctx, db, img_db, top_db)
+                        parse_message(&bot, &update, db, img_db, top_db)
                             .instrument(group_span)
                             .await.err().map(
                             |e|
@@ -1217,13 +1226,16 @@ async fn run(db: Arc<Mutex<MyDB>>,
             }
             respond(())
         }
-    })
+    ))
+    .dependencies(dptree::deps![db, img_db, top_db])
+    .build()
+    .dispatch()
     .await;
 }
 
 fn get_env() {
     let env_key = "NO_DUP_BOT_ADMIN";
-    let mut admin_db = HashSet::new();
+    let mut admin_db = HashSet::<UserId>::new();
     let admin_str = match env::var_os(&env_key) {
         Some(v) => v.into_string().unwrap(),
         None => {
@@ -1232,11 +1244,11 @@ fn get_env() {
         }
     };
     for id in admin_str.split(":"){
-        let admin = match id.parse::<i64>() {
+        let admin = match id.parse::<u64>() {
             Ok(id) => id,
             Err(_) => 0
         };
-        admin_db.insert(admin);
+        admin_db.insert(UserId(admin));
     }
     // only set once, so will never fail
     ADMIN.set(admin_db).unwrap();
