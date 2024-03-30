@@ -27,9 +27,9 @@ use once_cell::sync::OnceCell;
 use tracing::{debug, debug_span, info, span, warn, trace, Level, Instrument};
 use tracing_subscriber;
 
-static BOT_NAME: &str = "no_dup_bot";
+static BOT_NAME: OnceCell<String> = OnceCell::new();
 static ADMIN: OnceCell<HashSet<UserId>> = OnceCell::new();
-static TIME_OUT_DAYS: i64 = 10;
+static TIME_OUT_DAYS: OnceCell<i64> = OnceCell::new();
 
 
 #[derive(BotCommands, Debug)]
@@ -106,7 +106,7 @@ fn reply_to_bot(update: &Message) -> bool {
     if let Some(message) = update.reply_to_message() {
         if let Some(usr) = message.from() {
             if let Some(username) = &usr.username {
-                if username.eq(BOT_NAME) {
+                if username.eq(BOT_NAME.get().unwrap()) {
                     return true
                 }
             }
@@ -122,7 +122,7 @@ async fn delete_replied_msg(bot: &Bot, update: &Message)
         Some(message) => {
             if let Some(usr) = message.from() {
                 if let Some(username) = &usr.username {
-                    if username.eq(BOT_NAME) {
+                    if username.eq(BOT_NAME.get().unwrap()) {
                         info!("Start deleting message");
                         if allows_delete(update) {
                             bot
@@ -473,7 +473,7 @@ async fn check_img_hash(img_db: &Arc<Mutex<sled::Db>>, hash: &str, chat_id: &str
     let img_db = img_db.lock().await;
 
     let now = Utc::now();
-    let time_out_time = now.checked_sub_signed(Duration::days(TIME_OUT_DAYS)).unwrap();
+    let time_out_time = now.checked_sub_signed(Duration::days(*TIME_OUT_DAYS.get().unwrap())).unwrap();
     let dry_run = false;
 
     let mut best_hash: Option<ImageHash> = None;
@@ -869,7 +869,7 @@ async fn cleanup_img_db(img_db: &Arc<Mutex<sled::Db>>, chat_id: &str) -> Result<
     let img_db = img_db.lock().await;
     let mut count = 0;
     let now = Utc::now();
-    if let Some(time_out_time) = now.checked_sub_signed(Duration::days(TIME_OUT_DAYS)) {
+    if let Some(time_out_time) = now.checked_sub_signed(Duration::days(*TIME_OUT_DAYS.get().unwrap())) {
         for ans in img_db.iter() {
             ans.ok().map(
                 |(key, value)| {
@@ -1116,7 +1116,7 @@ fn need_handle(update: &Message) -> bool {
 async fn handle_command(bot: &Bot, update: &Message,
                         db: Arc<Mutex<MyDB>>,
                         top_db: Arc<Mutex<sled::Db>>) -> Result<bool, RequestError> {
-    let bot_name_str = BOT_NAME;
+    let bot_name_str = BOT_NAME.get().unwrap();
     if let Some(text) = update.text() {
         if let Ok(command) = Command::parse(text, bot_name_str) {
             // dbg!(&command);
@@ -1252,6 +1252,26 @@ fn get_env() {
     }
     // only set once, so will never fail
     ADMIN.set(admin_db).unwrap();
+
+    let bot_name_env_key = "NO_DUP_BOT_NAME";
+    let bot_name_str = match env::var_os(&bot_name_env_key) {
+        Some(v) => v.into_string().unwrap(),
+        None => {
+            warn!("${} is set as no_dup_bot", &bot_name_env_key);
+            String::from("no_dup_bot")
+        }
+    };
+    BOT_NAME.set(bot_name_str).unwrap();
+
+    let time_out_env_key = "NO_DUP_BOT_TIME_OUT_DAYS";
+    let time_out_i64 = match env::var_os(&time_out_env_key) {
+        Some(v) => v.into_string().expect("10").parse::<i64>().unwrap(),
+        None => {
+            warn!("${} is set as 10", &time_out_env_key);
+            10i64
+        }
+    };
+    TIME_OUT_DAYS.set(time_out_i64).unwrap();
 }
 
 #[tokio::main]

@@ -57,15 +57,9 @@ sudo apt install build-essential pkg-config libssl-dev
 #+END_SRC
 
 
-** Modify & build the bot
+** Build the bot
 
-First, you need to modify =no_dup_bot= in [[https://github.com/yangsheng6810/no_dup_bot/blob/master/src/main.rs#L26][L26]] of =main.rs= to your own bot username (i.e., the one that ends with =bot=). 
-
-#+BEGIN_SRC Rust
-static BOT_NAME: &str = "no_dup_bot";
-#+END_SRC
-
-Then you can start to build the bot.
+First start to build the bot.
 
 #+BEGIN_SRC sh
 cargo check # Check the bot package and all of its dependencies for errors.
@@ -75,11 +69,12 @@ cd <YOUR_PATH>/no_dup_bot/target/release
 
 ** Setup environment variables and start the bot
 
-Get =<YOUR_BOT_TOKEN>= from [[https://t.me/BotFather][@BotFather]], and get =<ADMIN_USER_ID>= from [[https://t.me/userinfobot][@userinfobot]].
+Get =<YOUR_BOT_TOKEN>= from [[https://t.me/BotFather][@BotFather]], and get =<ADMIN_USER_ID>= from [[https://t.me/userinfobot][@userinfobot]]. =YOUR_BOT_USERNAME= is the one you set in =BotFather= and ends with =bot=.
 
 #+BEGIN_SRC sh
 export TELOXIDE_TOKEN=<YOUR_BOT_TOKEN>
 export NO_DUP_BOT_ADMIN=<ADMIN_USER_ID>
+export NO_DUP_BOT_NAME=<YOUR_BOT_USERNAME>
 #+END_SRC
 
 Finally, start the bot and enjoy it!
@@ -88,6 +83,34 @@ Finally, start the bot and enjoy it!
 cd <YOUR PATH>/no_dup_bot/target/release && ./no_dup_bot
 #+END_SRC
 
+** Setup the bot using systemd
+
+Make a copy of =nodupbot.service.example= and name it as =nodupbot.service=.
+
+#+BEGIN_SRC sh
+cp nodupbot.service.example nodupbot.service
+#+END_SRC
+
+We need to modify the Line 10 - Line 15 of =nodupbot.service=.
+
+#+BEGIN_EXAMPLE 
+Environment="TELOXIDE_TOKEN=<YOUR_BOT_TOKEN>"
+Environment="NO_DUP_BOT_ADMIN=<ADMIN_USER_ID>"
+Environment="NO_DUP_BOT_NAME=<YOUR_BOT_USERNAME>"
+Environment="NO_DUP_BOT_TIME_OUT_DAYS=10"
+ExecStart=<YOUR_PATH>/no_dup_bot/target/release/no_dup_bot
+WorkingDirectory=<YOUR_PATH>/no_dup_bot/target/release
+#+END_EXAMPLE
+
+
+Finally, enable and start the bot. Enjoy it!
+
+#+BEGIN_SRC sh
+sudo mv nodupbot.service /etc/systemd/system
+sudo systemctl enable nodupbot # now your bot will start with the system
+sudo systemctl start nodupbot
+sudo systemctl status nodupbot # check your bot status
+#+END_SRC
 
 * Usage
 
