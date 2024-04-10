@@ -1181,56 +1181,53 @@ async fn run(db: Arc<Mutex<MyDB>>,
 
     // bot.set_my_commands(vec![teloxide::types::BotCommand::new("help", "delete")]).send().await.unwrap();
 
-    Dispatcher::builder(bot, Update::filter_message().endpoint(
-        |bot: Bot, map: DependencyMap, update: Message| async move {
-            let db: Arc<Mutex<MyDB>> = map.get();
-            let img_db: Arc<Mutex<sled::Db>> = map.get();
-            let top_db: Arc<Mutex<sled::Db>> = map.get();
-            match handle_command(&bot, &update, db.clone(), top_db.clone()).await {
-                Ok(true) => {
-                    info!("Command handled successfully");
-                },
-                Ok(false) | Err(_) => {
-                    if need_handle(&update) {
-                        // TODO: think of a better way to do it.
-                        // Currently decided to suppress this error.
-                        // teloxide seem to want a RequestError, while we would want a general Error
-                        let MessageId(chat_id) = update.id;
-                        let group_title = update.chat.title();
-
-                        let username: Option<&str>;
-                        let user = match update.from() {
-                            Some(user) => {
-                                username = Some(&user.first_name);
-                                let UserId(user_id) = user.id;
-                                Some(user_id)
-                            },
-                            _ => {
-                                username = None;
-                                None
-                            }
-                        };
-                        let group_span = span!(Level::INFO, "group",
-                                               id = &chat_id,
-                                               name = &group_title,
-                                               by = &user,
-                                               username = &username);
-                        parse_message(&bot, &update, db, img_db, top_db)
-                            .instrument(group_span)
-                            .await.err().map(
-                            |e|
-                            warn!("parse_message see error {:?}", e)
-                        );
-                    }
-                },
-            }
-            respond(())
-        }
-    ))
+    Dispatcher::builder(bot, Update::filter_message().endpoint(answer))
     .dependencies(dptree::deps![db, img_db, top_db])
     .build()
     .dispatch()
     .await;
+}
+
+async fn answer(bot: Bot, db: Arc<Mutex<MyDB>>, img_db: Arc<Mutex<sled::Db>>, top_db: Arc<Mutex<sled::Db>>, update: Message) -> ResponseResult<()> {
+    match handle_command(&bot, &update, db.clone(), top_db.clone()).await {
+        Ok(true) => {
+            info!("Command handled successfully");
+        },
+        Ok(false) | Err(_) => {
+            if need_handle(&update) {
+                // TODO: think of a better way to do it.
+                // Currently decided to suppress this error.
+                // teloxide seem to want a RequestError, while we would want a general Error
+                let MessageId(chat_id) = update.id;
+                let group_title = update.chat.title();
+
+                let username: Option<&str>;
+                let user = match update.from() {
+                    Some(user) => {
+                        username = Some(&user.first_name);
+                        let UserId(user_id) = user.id;
+                        Some(user_id)
+                    },
+                    _ => {
+                        username = None;
+                        None
+                    }
+                };
+                let group_span = span!(Level::INFO, "group",
+                                       id = &chat_id,
+                                       name = &group_title,
+                                       by = &user,
+                                       username = &username);
+                parse_message(&bot, &update, db, img_db, top_db)
+                    .instrument(group_span)
+                    .await.err().map(
+                    |e|
+                    warn!("parse_message see error {:?}", e)
+                );
+            }
+        },
+    }
+    respond(())
 }
 
 fn get_env() {
