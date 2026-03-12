@@ -33,9 +33,19 @@ jobs:
       - name: Run tests
         run: cargo test --release --target ${{ matrix.target }}
 
+      - name: Tar artifacts
+        id: tar-artifacts
+        run: |
+          ARTIFACT_DIR=target/${{ matrix.target }}/release/
+          ARTIFACT_NAME=no_dup_bot
+          TAR_FILE_NAME=no_dup_bot-${{ matrix.target }}.tar.zst
+          tar --zstd -cf "${ARTIFACT_DIR}/${TAR_FILE_NAME}" -C "${ARTIFACT_DIR}" "${ARTIFACT_NAME}" 
+          echo "ARTIFACT_DIR=${ARTIFACT_DIR}" >> "$GITHUB_OUTPUT"
+          echo "TAR_FILE_NAME=${TAR_FILE_NAME}" >> "$GITHUB_OUTPUT"
+
       - name: Upload artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
-          name:  no_dup_bot-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/no_dup_bot
+          archive: false
+          path: ${{ steps.tar-artifacts.outputs.ARTIFACT_DIR }}/${{ steps.tar-artifacts.outputs.TAR_FILE_NAME }}
           retention-days: 30
