@@ -22,6 +22,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/
+            ./target/
+          key: ${{ matrix.runner }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.runner }}-cargo-
+            ${{ matrix.runner }}-
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
