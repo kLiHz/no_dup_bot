@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{Error, ErrorKind};
 
 use anyhow::Result;
-use img_hash::ImageHash;
+use image_hasher::ImageHash;
 // use bytes::{Bytes, BytesMut, Buf, BufMut};
 use bytes::BufMut;
 use std::collections::BinaryHeap;
@@ -383,7 +383,7 @@ async fn get_hash_new(bot: &Bot, img_to_download: &PhotoSize) -> Result<Option<S
     } else {
         match image::load_from_memory(&buf) {
             Ok(img) => {
-                let hasher = img_hash::HasherConfig::new().to_hasher();
+                let hasher = image_hasher::HasherConfig::new().to_hasher();
                 let hash = Some(hasher.hash_image(&img).to_base64());
                 Ok(hash)
             },
