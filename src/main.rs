@@ -23,13 +23,13 @@ use std::collections::BinaryHeap;
 use std::collections::HashSet;
 
 use std::env;
-use once_cell::sync::OnceCell;
+use std::sync::OnceLock;
 use tracing::{debug, debug_span, info, span, warn, trace, Level, Instrument};
 use tracing_subscriber;
 
-static BOT_NAME: OnceCell<String> = OnceCell::new();
-static ADMIN: OnceCell<HashSet<UserId>> = OnceCell::new();
-static TIME_OUT_DAYS: OnceCell<i64> = OnceCell::new();
+static BOT_NAME: OnceLock<String> = OnceLock::new();
+static ADMIN: OnceLock<HashSet<UserId>> = OnceLock::new();
+static TIME_OUT_DAYS: OnceLock<i64> = OnceLock::new();
 
 
 #[derive(BotCommands, Debug)]

@@ -974,7 +974,6 @@ dependencies = [
  "image",
  "img_hash",
  "log",
- "once_cell",
  "serde",
  "serde_json",
  "sled",
