@@ -410,9 +410,7 @@ where
     sled::IVec::from(serde_json::to_string(&ss).unwrap().as_bytes())
 }
 
-async fn insert_img_hash(img_db: &Arc<Mutex<sled::Db>>, hash: &str, chat_id: &str, key: &MessageKey) -> bool {
-    let img_db = img_db.lock().await;
-
+async fn insert_img_hash(img_db: &Arc<sled::Db>, hash: &str, chat_id: &str, key: &MessageKey) -> bool {
     let img_key = ImageKey{
         chat_id: String::from(chat_id),
         hash_str: String::from(hash),
@@ -434,9 +432,7 @@ async fn insert_img_hash(img_db: &Arc<Mutex<sled::Db>>, hash: &str, chat_id: &st
     }
 }
 
-async fn contains_img_hash(img_db: &Arc<Mutex<sled::Db>>, hash: &str, chat_id: &str) -> bool {
-    let img_db = img_db.lock().await;
-
+async fn contains_img_hash(img_db: &Arc<sled::Db>, hash: &str, chat_id: &str) -> bool {
     let img_key = ImageKey{
         chat_id: String::from(chat_id),
         hash_str: String::from(hash),
@@ -454,7 +450,7 @@ async fn contains_img_hash(img_db: &Arc<Mutex<sled::Db>>, hash: &str, chat_id: &
 }
 
 // also deletes old img_db entries
-async fn check_img_hash(img_db: &Arc<Mutex<sled::Db>>, hash: &str, chat_id: &str) -> Result<Option<MessageKey>> {
+async fn check_img_hash(img_db: &Arc<sled::Db>, hash: &str, chat_id: &str) -> Result<Option<MessageKey>> {
     // images with similarity < threshold will be considered the same
     let similarity_threshold = 4u32;
     let hash = ImageHash::from_base64(&hash).unwrap();
@@ -465,8 +461,6 @@ async fn check_img_hash(img_db: &Arc<Mutex<sled::Db>>, hash: &str, chat_id: &str
     // the number 20 is kind of arbitrary, but seems enough to capture the first
     // few bytes in the hash
     let prefix = &empty_key_str.as_bytes()[0..20];
-
-    let img_db = img_db.lock().await;
 
     let now = Utc::now();
     let time_out_time = now.checked_sub_signed(Duration::days(*TIME_OUT_DAYS.get().unwrap())).unwrap();
@@ -530,7 +524,7 @@ async fn check_img_hash(img_db: &Arc<Mutex<sled::Db>>, hash: &str, chat_id: &str
             if dist < similarity_threshold {
                 // the best match should update its timestamp, and removed from old img set
                 if let Some(best_hash) = best_hash.clone() {
-                    touch_image(&img_db, &chat_id, &best_hash, &mut old_img_set);
+                    touch_image(img_db, &chat_id, &best_hash, &mut old_img_set);
                 }
                 best_hash.map(|h| info!("Use this hash! {:?}", h.to_base64()));
                 best_url.as_ref().map(|u| info!("with url {:?}", u));
@@ -564,7 +558,7 @@ async fn check_img_hash(img_db: &Arc<Mutex<sled::Db>>, hash: &str, chat_id: &str
     match_ans
 }
 
-fn touch_image(img_db: &MutexGuard<sled::Db>, chat_id: &str, hash_str: &ImageHash,
+fn touch_image(img_db: &sled::Db, chat_id: &str, hash_str: &ImageHash,
                old_img_set: &mut HashSet<sled::IVec>) -> bool {
     let best_key = ImageKey{
         chat_id: String::from(chat_id),
@@ -589,7 +583,7 @@ fn touch_image(img_db: &MutexGuard<sled::Db>, chat_id: &str, hash_str: &ImageHas
 
 
 async fn reset_top_board(bot: &Bot, update: &Message,
-                         top_db: &Arc<Mutex<sled::Db>>){
+                         top_db: &Arc<sled::Db>){
 
     let chat_id = get_chat_id(update);
 
@@ -599,8 +593,6 @@ async fn reset_top_board(bot: &Bot, update: &Message,
     // the number 20 is kind of arbitrary, but seems enough to capture the first
     // few bytes in the hash
     let prefix = &empty_key_str.as_bytes()[0..20];
-
-    let top_db = top_db.lock().await;
 
     let mut count = 0;
     for ans in top_db.scan_prefix(prefix) {
@@ -649,7 +641,7 @@ async fn reset_top_board(bot: &Bot, update: &Message,
     }
 }
 
-async fn update_top_board(top_db: &Arc<Mutex<sled::Db>>, chat_id: &str, user_id: &Option<UserId>, username: &Option<String>){
+async fn update_top_board(top_db: &Arc<sled::Db>, chat_id: &str, user_id: &Option<UserId>, username: &Option<String>){
 
     if let Some(user_id) = user_id {
 
@@ -659,7 +651,6 @@ async fn update_top_board(top_db: &Arc<Mutex<sled::Db>>, chat_id: &str, user_id:
         };
         let key = serde_json::to_string(&key).unwrap();
 
-        let top_db = top_db.lock().await;
         match top_db.get(key.as_bytes()) {
             Err(e) => {
                 warn!("top board database get error {:?} when looking for key {:?}", &e, &key);
@@ -688,7 +679,7 @@ async fn update_top_board(top_db: &Arc<Mutex<sled::Db>>, chat_id: &str, user_id:
 }
 
 async fn print_topics(bot: &Bot, update: &Message,
-                      db: Arc<Mutex<MyDB>>, chat_id: &str) {
+                      db: Arc<MyDB>, chat_id: &str) {
     // prepare an empty key so we can limit search on images from the same chat
     let empty_key = MessageKey{
         chat_id: String::from(chat_id),
@@ -698,8 +689,6 @@ async fn print_topics(bot: &Bot, update: &Message,
     // the number 20 is kind of arbitrary, but seems enough to capture the first
     // few bytes in the hash
     let prefix = &empty_key_str.as_bytes()[0..20];
-
-    let db = db.lock().await;
 
     let mut count = 0;
     let mut heap = BinaryHeap::new();
@@ -751,15 +740,13 @@ async fn print_topics(bot: &Bot, update: &Message,
 }
 
 async fn print_top_board(bot: &Bot, update: &Message,
-                         top_db: &Arc<Mutex<sled::Db>>, chat_id: &str) {
+                         top_db: &Arc<sled::Db>, chat_id: &str) {
     // prepare an empty key so we can limit search on images from the same chat
     let empty_key = UserKey{chat_id: String::from(chat_id), user_id: UserId(0)};
     let empty_key_str = serde_json::to_string(&empty_key).unwrap();
     // the number 20 is kind of arbitrary, but seems enough to capture the first
     // few bytes in the hash
     let prefix = &empty_key_str.as_bytes()[0..20];
-
-    let top_db = top_db.lock().await;
 
     let mut count = 0;
     let mut heap = BinaryHeap::new();
@@ -817,7 +804,7 @@ async fn print_top_board(bot: &Bot, update: &Message,
 }
 
 async fn print_my_number(bot: &Bot, update: &Message,
-                         top_db: &Arc<Mutex<sled::Db>>) {
+                         top_db: &Arc<sled::Db>) {
     let chat_id = get_chat_id(update);
     let user_id = update.from.as_ref().map_or(None, |u| Some(u.id));
 
@@ -825,7 +812,6 @@ async fn print_my_number(bot: &Bot, update: &Message,
 
     if let Some(user_id) = user_id {
 
-        let top_db = top_db.lock().await;
         let key = UserKey{
             chat_id: String::from(chat_id),
             user_id: user_id.clone(),
@@ -861,8 +847,7 @@ async fn print_my_number(bot: &Bot, update: &Message,
 }
 
 #[allow(dead_code)]
-async fn cleanup_img_db(img_db: &Arc<Mutex<sled::Db>>, chat_id: &str) -> Result<()> {
-    let img_db = img_db.lock().await;
+async fn cleanup_img_db(img_db: &Arc<sled::Db>, chat_id: &str) -> Result<()> {
     let mut count = 0;
     let now = Utc::now();
     if let Some(time_out_time) = now.checked_sub_signed(Duration::days(*TIME_OUT_DAYS.get().unwrap())) {
@@ -906,9 +891,9 @@ async fn cleanup_img_db(img_db: &Arc<Mutex<sled::Db>>, chat_id: &str) -> Result<
 async fn
 parse_message(
     bot: &Bot, update: &Message,
-    db: Arc<Mutex<MyDB>>,
-    img_db: Arc<Mutex<sled::Db>>,
-    top_db: Arc<Mutex<sled::Db>>
+    db: Arc<MyDB>,
+    img_db: Arc<sled::Db>,
+    top_db: Arc<sled::Db>
 ) -> Result<()> {
     let mut url: Option<Url>;
     let link = get_msg_link(update);
@@ -1007,7 +992,6 @@ parse_message(
     let mut my_msg_id: Option<MessageId> = None;
     if let Some(url) = url {
         let key = MessageKey{chat_id: clean_chat_id.clone(), url:url.clone()};
-        let db = db.lock().await;
         if let Some(info) = db.find(&key){
             let mut info = info.clone();
             // has seen this message before
@@ -1110,8 +1094,8 @@ fn need_handle(update: &Message) -> bool {
 }
 
 async fn handle_command(bot: &Bot, update: &Message,
-                        db: Arc<Mutex<MyDB>>,
-                        top_db: Arc<Mutex<sled::Db>>) -> Result<bool, RequestError> {
+                        db: Arc<MyDB>,
+                        top_db: Arc<sled::Db>) -> Result<bool, RequestError> {
     let bot_name_str = BOT_NAME.get().unwrap();
     if let Some(text) = update.text() {
         if let Ok(command) = Command::parse(text, bot_name_str) {
@@ -1130,8 +1114,8 @@ async fn handle_command(bot: &Bot, update: &Message,
 async fn action(
     bot: &Bot, update: &Message,
     command: Command,
-    db: Arc<Mutex<MyDB>>,
-    top_db: Arc<Mutex<sled::Db>>
+    db: Arc<MyDB>,
+    top_db: Arc<sled::Db>
 ) -> Result<(), RequestError> {
     match command {
         Command::Help => {
@@ -1168,9 +1152,9 @@ async fn action(
     Ok(())
 }
 
-async fn run(db: Arc<Mutex<MyDB>>,
-             img_db: Arc<Mutex<sled::Db>>,
-             top_db: Arc<Mutex<sled::Db>>) {
+async fn run(db: Arc<MyDB>,
+             img_db: Arc<sled::Db>,
+             top_db: Arc<sled::Db>) {
     info!("Starting simple_commands_bot...");
 
     let bot = Bot::from_env();
@@ -1184,7 +1168,7 @@ async fn run(db: Arc<Mutex<MyDB>>,
     .await;
 }
 
-async fn answer(bot: Bot, db: Arc<Mutex<MyDB>>, img_db: Arc<Mutex<sled::Db>>, top_db: Arc<Mutex<sled::Db>>, update: Message) -> ResponseResult<()> {
+async fn answer(bot: Bot, db: Arc<MyDB>, img_db: Arc<sled::Db>, top_db: Arc<sled::Db>, update: Message) -> ResponseResult<()> {
     match handle_command(&bot, &update, db.clone(), top_db.clone()).await {
         Ok(true) => {
             info!("Command handled successfully");
@@ -1274,8 +1258,8 @@ async fn main() {
     // tracing_subscriber::fmt()
     //     .pretty()
     //     .init();
-    let db = Arc::new(Mutex::new(MyDB::init("bot_db")));
-    let img_db = Arc::new(Mutex::new(sled::open("img_db").unwrap()));
-    let top_db = Arc::new(Mutex::new(sled::open("top_db").unwrap()));
+    let db = Arc::new(MyDB::init("bot_db"));
+    let img_db = Arc::new(sled::open("img_db").unwrap());
+    let top_db = Arc::new(sled::open("top_db").unwrap());
     run(db.clone(), img_db.clone(), top_db.clone()).await;
 }
