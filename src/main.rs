@@ -1,6 +1,4 @@
-use teloxide::dptree::di::DependencySupplier;
-use teloxide::payloads::SendMessageSetters;
-use teloxide::types::{MessageId};
+use teloxide::types::{MessageId, ReplyParameters, LinkPreviewOptions};
 use teloxide::{prelude::*, net::Download, types::File as TgFile, types::PhotoSize};
 use teloxide::{RequestError, ApiError};
 use teloxide::utils::command::BotCommands;
@@ -24,7 +22,7 @@ use std::collections::HashSet;
 
 use std::env;
 use std::sync::OnceLock;
-use tracing::{debug, debug_span, info, span, warn, trace, Level, Instrument};
+use tracing::{debug, info, span, warn, trace, Level, Instrument};
 use tracing_subscriber;
 
 static BOT_NAME: OnceLock<String> = OnceLock::new();
@@ -56,13 +54,13 @@ enum Command {
 // message, but no more. Therefore, we can not achieve this
 #[allow(dead_code)]
 fn come_from_original_author(update: &Message) -> bool {
-    if let Some(this_message_from) = update.from() {
+    if let Some(this_message_from) = update.from.as_ref() {
         debug!("this_message_from is {:?}", this_message_from);
         if let Some(message) = update.reply_to_message() {
             debug!("message is {:?}", message);
             if let Some(first_message) = message.reply_to_message() {
                 debug!("first_message is {:?}", first_message);
-                if let Some(original_from) = first_message.from(){
+                if let Some(original_from) = first_message.from.as_ref(){
                     debug!("original_from is {:?}", original_from);
                     if original_from.id == this_message_from.id {
                         return true
@@ -79,7 +77,7 @@ fn come_from_original_author(update: &Message) -> bool {
 fn is_admin(update: &Message) -> bool {
     let admin_db = ADMIN.get().unwrap().clone();
 
-    if let Some(user) = update.from() {
+    if let Some(user) = update.from.as_ref() {
         // dbg!(user);
         if admin_db.contains(&user.id) {
             info!("Admin {:?} confirmed", &user.id);
@@ -104,7 +102,7 @@ fn allows_delete(update: &Message) -> bool {
 // Delete the replied message
 fn reply_to_bot(update: &Message) -> bool {
     if let Some(message) = update.reply_to_message() {
-        if let Some(usr) = message.from() {
+        if let Some(usr) = message.from.as_ref() {
             if let Some(username) = &usr.username {
                 if username.eq(BOT_NAME.get().unwrap()) {
                     return true
@@ -120,7 +118,7 @@ async fn delete_replied_msg(bot: &Bot, update: &Message)
                             -> Result<(), RequestError> {
     match update.reply_to_message() {
         Some(message) => {
-            if let Some(usr) = message.from() {
+            if let Some(usr) = message.from.as_ref() {
                 if let Some(username) = &usr.username {
                     if username.eq(BOT_NAME.get().unwrap()) {
                         info!("Start deleting message");
@@ -137,7 +135,7 @@ async fn delete_replied_msg(bot: &Bot, update: &Message)
         }
         None => {
             // info!("Use this command in a reply to another message!");
-            bot.send_message(update.chat.id, "Please reply to a message sent by the bot!").reply_to_message_id(update.id).await?;
+            bot.send_message(update.chat.id, "Please reply to a message sent by the bot!").reply_parameters(ReplyParameters::new(update.id)).await?;
         }
     }
     Ok(())
@@ -352,7 +350,7 @@ fn filter_url(update: &Message, url: Option<Url>) -> Option<Url> {
 }
 
 async fn get_hash_new(bot: &Bot, img_to_download: &PhotoSize) -> Result<Option<String>>{
-    let TgFile { path, .. } = bot.get_file(&img_to_download.file.id).send().await?;
+    let TgFile { path, .. } = bot.get_file(img_to_download.file.id.clone()).send().await?;
     let mut stream = bot.download_file_stream(&path);
     // let mut count = 0;
     let mut buf = Vec::with_capacity(img_to_download.file.size as usize);
@@ -645,7 +643,7 @@ async fn reset_top_board(bot: &Bot, update: &Message,
     }
 
     let final_msg = String::from("本群火星排行榜已重置");
-    if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg).reply_to_message_id(update.id).await {
+    if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg).reply_parameters(ReplyParameters::new(update.id)).await {
         // dbg!(answer_status);
     }
 }
@@ -807,7 +805,7 @@ async fn print_top_board(bot: &Bot, update: &Message,
         final_msg.push_str("本群还没有人火星过！\n");
     }
     if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg)
-                                   .disable_web_page_preview(true)
+                                   .link_preview_options(LinkPreviewOptions { is_disabled: true, url: None, prefer_small_media: false, prefer_large_media: false, show_above_text: false })
                                    .send().await {
 
         // dbg!(answer_status);
@@ -820,7 +818,7 @@ async fn print_top_board(bot: &Bot, update: &Message,
 async fn print_my_number(bot: &Bot, update: &Message,
                          top_db: &Arc<Mutex<sled::Db>>) {
     let chat_id = get_chat_id(update);
-    let user_id = update.from().map_or(None, |u| Some(u.id));
+    let user_id = update.from.as_ref().map_or(None, |u| Some(u.id));
 
     let mut final_msg = String::from("");
 
@@ -855,7 +853,7 @@ async fn print_my_number(bot: &Bot, update: &Message,
         final_msg.push_str(format!("找不到您的user_id\n").as_str())
     }
 
-    if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg).reply_to_message_id(update.id).await {
+    if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg).reply_parameters(ReplyParameters::new(update.id)).await {
         // dbg!(answer_status);
     }
 
@@ -914,8 +912,8 @@ parse_message(
     let mut url: Option<Url>;
     let link = get_msg_link(update);
     let clean_chat_id = get_chat_id(update);
-    let user_id = update.from().map_or(None, |u| Some(u.id));
-    let username = update.from().map_or(None,
+    let user_id = update.from.as_ref().map_or(None, |u| Some(u.id));
+    let username = update.from.as_ref().map_or(None,
                                         |u|
                                         match u.last_name.clone() {
                                             Some(last_name) => Some(format!("{} {}", u.first_name.clone(), last_name)),
@@ -1023,7 +1021,7 @@ parse_message(
             // ctx.answer(&link_msg).await?;
             let final_msg = format!("你火星了！这条消息是第{}次来到本群了，快去爬楼。{}", info.count, link_msg);
             info!("{}", &final_msg);
-            if let Ok(msg) = bot.send_message(update.chat.id, final_msg).reply_to_message_id(update.id).await {
+            if let Ok(msg) = bot.send_message(update.chat.id, final_msg).reply_parameters(ReplyParameters::new(update.id)).await {
                 my_msg_id = Some(msg.id);
             }
         } else {
@@ -1078,7 +1076,7 @@ async fn delete_final_msg_accordingly(bot: &Bot, chat_id: ChatId, msg_id: Messag
 
 
 fn is_forward(update: &Message) -> bool {
-    update.forward_from().is_some() || update.forward_from_chat().is_some()
+    update.forward_origin().is_some()
 }
 
 fn is_image(update: &Message) -> bool {
@@ -1199,7 +1197,7 @@ async fn answer(bot: Bot, db: Arc<Mutex<MyDB>>, img_db: Arc<Mutex<sled::Db>>, to
                 let group_title = update.chat.title();
 
                 let username: Option<&str>;
-                let user = match update.from() {
+                let user = match update.from.as_ref() {
                     Some(user) => {
                         username = Some(&user.first_name);
                         let UserId(user_id) = user.id;
