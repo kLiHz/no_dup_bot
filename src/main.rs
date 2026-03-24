@@ -147,10 +147,8 @@ use chrono::{DateTime, Duration, Utc};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageInfo {
-    #[serde(with = "url_serde")]
     url: Url,
     count: u32,
-    #[serde(with = "url_serde")]
     link: Option<Url>,
     user_id: Option<UserId>,
 }
@@ -158,7 +156,6 @@ pub struct MessageInfo {
 #[derive(Debug, Clone, Hash, Serialize, Deserialize)]
 pub struct MessageKey {
     chat_id: String,
-    #[serde(with = "url_serde")]
     url: Url
 }
 
