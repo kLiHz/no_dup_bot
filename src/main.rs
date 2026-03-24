@@ -1,7 +1,8 @@
-use teloxide::types::{MessageId, ReplyParameters, LinkPreviewOptions};
+use teloxide::types::MessageId;
 use teloxide::{prelude::*, net::Download, types::File as TgFile, types::PhotoSize};
 use teloxide::{RequestError, ApiError};
 use teloxide::utils::command::BotCommands;
+use teloxide::sugar::request::{RequestReplyExt, RequestLinkPreviewExt};
 
 use std::sync::Arc;
 use tokio::sync::{Mutex, MutexGuard};
@@ -135,7 +136,7 @@ async fn delete_replied_msg(bot: &Bot, update: &Message)
         }
         None => {
             // info!("Use this command in a reply to another message!");
-            bot.send_message(update.chat.id, "Please reply to a message sent by the bot!").reply_parameters(ReplyParameters::new(update.id)).await?;
+            bot.send_message(update.chat.id, "Please reply to a message sent by the bot!").reply_to(update.id).await?;
         }
     }
     Ok(())
@@ -643,7 +644,7 @@ async fn reset_top_board(bot: &Bot, update: &Message,
     }
 
     let final_msg = String::from("本群火星排行榜已重置");
-    if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg).reply_parameters(ReplyParameters::new(update.id)).await {
+    if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg).reply_to(update.id).await {
         // dbg!(answer_status);
     }
 }
@@ -805,7 +806,7 @@ async fn print_top_board(bot: &Bot, update: &Message,
         final_msg.push_str("本群还没有人火星过！\n");
     }
     if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg)
-                                   .link_preview_options(LinkPreviewOptions { is_disabled: true, url: None, prefer_small_media: false, prefer_large_media: false, show_above_text: false })
+                                   .disable_link_preview(true)
                                    .send().await {
 
         // dbg!(answer_status);
@@ -853,7 +854,7 @@ async fn print_my_number(bot: &Bot, update: &Message,
         final_msg.push_str(format!("找不到您的user_id\n").as_str())
     }
 
-    if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg).reply_parameters(ReplyParameters::new(update.id)).await {
+    if let Ok(_answer_status) = bot.send_message(update.chat.id, final_msg).reply_to(update.id).await {
         // dbg!(answer_status);
     }
 
@@ -1021,7 +1022,7 @@ parse_message(
             // ctx.answer(&link_msg).await?;
             let final_msg = format!("你火星了！这条消息是第{}次来到本群了，快去爬楼。{}", info.count, link_msg);
             info!("{}", &final_msg);
-            if let Ok(msg) = bot.send_message(update.chat.id, final_msg).reply_parameters(ReplyParameters::new(update.id)).await {
+            if let Ok(msg) = bot.send_message(update.chat.id, final_msg).reply_to(update.id).await {
                 my_msg_id = Some(msg.id);
             }
         } else {
